@@ -23,8 +23,8 @@ function pctDisplay(pct: number): string {
   return (pct * 1000).toFixed(0).padStart(3, "0").replace(/^(\d)/, ".$1");
 }
 
-const BASE_COLS = "32px minmax(150px, 1fr) 28px 56px 56px 76px 48px 60px";
-const SPIKE_COLS = "32px minmax(130px, 1fr) 28px 52px 52px 72px 44px 56px 56px";
+const BASE_COLS = "32px minmax(120px, 1fr) minmax(80px, 120px) 28px 56px 56px 76px 48px 60px";
+const SPIKE_COLS = "32px minmax(100px, 1fr) minmax(80px, 120px) 28px 52px 52px 72px 44px 56px 56px";
 
 export default function TeamTable({
   data,
@@ -107,6 +107,9 @@ export default function TeamTable({
           #
         </div>
         <SortHeader label="Team" sortKeyName="teamName" />
+        <div className="px-2 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-400">
+          Opp
+        </div>
         <SortHeader label="G" sortKeyName="gamesThisWeek" />
         <SortHeader label="Pyth%" sortKeyName="blendedWinPct" />
         <SortHeader label="Recent" sortKeyName="recentFormWinPct" />
@@ -149,6 +152,19 @@ export default function TeamTable({
                 </div>
                 <div className="px-2 py-2.5 text-sm font-medium text-gray-100">
                   {team.teamName}
+                </div>
+                <div className="px-2 py-2.5 text-xs text-gray-400 truncate" title={
+                  team.games.map((g) => g.opponent.abbreviation || g.opponent.name).join(", ")
+                }>
+                  {(() => {
+                    const opps = team.games.map((g) => g.opponent.abbreviation || g.opponent.name);
+                    const unique = [...new Set(opps)];
+                    const counts = unique.map((abbr) => {
+                      const count = opps.filter((o) => o === abbr).length;
+                      return count > 1 ? `${abbr}(${count})` : abbr;
+                    });
+                    return counts.join(", ");
+                  })()}
                 </div>
                 <div className="px-2 py-2.5 text-sm text-center text-gray-300">
                   {team.gamesThisWeek}
