@@ -123,6 +123,13 @@ export interface TeamWeekAnalysis {
   isUsed: boolean;
 }
 
+export interface ScoringWeights {
+  homeFieldAdvantage: number;
+  recentFormWeight: number;
+  pitcherAdjustmentMax: number;
+  regressionGames: number;
+}
+
 export interface SeasonWeek {
   weekNumber: number;
   startDate: string;

@@ -1,19 +1,18 @@
-import { SeasonWeek } from "./types";
+import { SeasonWeek, ScoringWeights } from "./types";
 
 export const MLB_API_BASE = "https://statsapi.mlb.com/api/v1";
 
-// Scoring tuning parameters
-export const HOME_FIELD_ADVANTAGE = 0.04;
+// Non-tunable constants
 export const PYTHAGOREAN_EXPONENT = 2;
-export const RECENT_FORM_WEIGHT = 0.3; // 30% recent, 70% season
-export const LEAGUE_AVG_ERA = 4.0; // approximate league average ERA
-export const PITCHER_ADJUSTMENT_MAX = 0.06; // max +/- adjustment from pitcher quality
+export const LEAGUE_AVG_ERA = 4.0;
 
-// Regression to the mean: how many games of .500 to mix in.
-// With 40 regression games, a team that is 10-2 (.833 Pythag) after 12 games
-// becomes (10 + 20) / (12 + 40) = 30/52 ≈ .577 — much more realistic.
-// By mid-season (~80 games), regression is mild: 80/(80+40) = 67% real signal.
-export const REGRESSION_GAMES = 25;
+// User-tunable defaults
+export const DEFAULT_SCORING_WEIGHTS: ScoringWeights = {
+  homeFieldAdvantage: 0.04,
+  recentFormWeight: 0.3,
+  pitcherAdjustmentMax: 0.06,
+  regressionGames: 25,
+};
 
 // 2026 MLB season weeks (Monday-Sunday blocks)
 // Opening Day is March 26, 2026. Season ends September 27, 2026.

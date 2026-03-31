@@ -5,14 +5,12 @@ import {
   RecentTeamStats,
   TeamWeekAnalysis,
   GameAnalysis,
+  ScoringWeights,
 } from "./types";
 import {
-  HOME_FIELD_ADVANTAGE,
   PYTHAGOREAN_EXPONENT,
-  RECENT_FORM_WEIGHT,
   LEAGUE_AVG_ERA,
-  PITCHER_ADJUSTMENT_MAX,
-  REGRESSION_GAMES,
+  DEFAULT_SCORING_WEIGHTS,
 } from "./constants";
 
 export function pythagoreanWinPct(
@@ -29,11 +27,11 @@ export function pythagoreanWinPct(
 
 export function regressToMean(
   rawPct: number,
-  gamesPlayed: number
+  gamesPlayed: number,
+  regressionGames: number
 ): number {
-  // Blend raw estimate with .500 based on sample size.
-  // More games → more trust in the observed rate.
-  const weight = gamesPlayed / (gamesPlayed + REGRESSION_GAMES);
+  if (regressionGames === 0) return rawPct;
+  const weight = gamesPlayed / (gamesPlayed + regressionGames);
   return weight * rawPct + (1 - weight) * 0.5;
 }
 
@@ -50,48 +48,45 @@ export function log5WinProbability(
 
 export function adjustForHomeField(
   probability: number,
-  isHome: boolean
+  isHome: boolean,
+  homeFieldAdvantage: number
 ): number {
   const adjusted = isHome
-    ? probability + HOME_FIELD_ADVANTAGE
-    : probability - HOME_FIELD_ADVANTAGE;
+    ? probability + homeFieldAdvantage
+    : probability - homeFieldAdvantage;
   return Math.max(0.01, Math.min(0.99, adjusted));
 }
 
 export function pitcherAdjustment(
   teamPitcherFIP: number | null,
-  opponentPitcherFIP: number | null
+  opponentPitcherFIP: number | null,
+  pitcherAdjustmentMax: number
 ): number {
-  // Uses FIP (Fielder Independent Pitching) instead of ERA.
-  // FIP isolates what the pitcher controls: strikeouts, walks, home runs.
-  // League average FIP ≈ 4.00 (same scale as ERA).
   let adjustment = 0;
 
   if (teamPitcherFIP !== null) {
-    // Lower FIP = better pitcher = positive adjustment
     const teamDiff = (LEAGUE_AVG_ERA - teamPitcherFIP) / LEAGUE_AVG_ERA;
-    adjustment += teamDiff * PITCHER_ADJUSTMENT_MAX;
+    adjustment += teamDiff * pitcherAdjustmentMax;
   }
 
   if (opponentPitcherFIP !== null) {
-    // Higher opponent FIP = worse pitcher = positive adjustment for us
     const oppDiff = (opponentPitcherFIP - LEAGUE_AVG_ERA) / LEAGUE_AVG_ERA;
-    adjustment += oppDiff * PITCHER_ADJUSTMENT_MAX;
+    adjustment += oppDiff * pitcherAdjustmentMax;
   }
 
-  // Clamp total adjustment
   return Math.max(
-    -PITCHER_ADJUSTMENT_MAX * 2,
-    Math.min(PITCHER_ADJUSTMENT_MAX * 2, adjustment)
+    -pitcherAdjustmentMax * 2,
+    Math.min(pitcherAdjustmentMax * 2, adjustment)
   );
 }
 
 export function blendWithRecentForm(
   seasonPythag: number,
-  recentPythag: number | null
+  recentPythag: number | null,
+  recentFormWeight: number
 ): number {
   if (recentPythag === null) return seasonPythag;
-  return seasonPythag * (1 - RECENT_FORM_WEIGHT) + recentPythag * RECENT_FORM_WEIGHT;
+  return seasonPythag * (1 - recentFormWeight) + recentPythag * recentFormWeight;
 }
 
 export function calculateGameWinProbability(
@@ -101,22 +96,16 @@ export function calculateGameWinProbability(
   teamPitcherFIP: number | null,
   opponentPitcherFIP: number | null,
   teamRecentPythag: number | null,
-  opponentRecentPythag: number | null
+  opponentRecentPythag: number | null,
+  w: ScoringWeights
 ): number {
-  // Blend season + recent form for both teams
-  const teamBlended = blendWithRecentForm(teamPythag, teamRecentPythag);
-  const oppBlended = blendWithRecentForm(opponentPythag, opponentRecentPythag);
+  const teamBlended = blendWithRecentForm(teamPythag, teamRecentPythag, w.recentFormWeight);
+  const oppBlended = blendWithRecentForm(opponentPythag, opponentRecentPythag, w.recentFormWeight);
 
-  // Base probability via log5
   let prob = log5WinProbability(teamBlended, oppBlended);
+  prob = adjustForHomeField(prob, isHome, w.homeFieldAdvantage);
+  prob += pitcherAdjustment(teamPitcherFIP, opponentPitcherFIP, w.pitcherAdjustmentMax);
 
-  // Adjust for home field
-  prob = adjustForHomeField(prob, isHome);
-
-  // Adjust for pitching matchup (FIP-based)
-  prob += pitcherAdjustment(teamPitcherFIP, opponentPitcherFIP);
-
-  // Final clamp
   return Math.max(0.01, Math.min(0.99, prob));
 }
 
@@ -126,10 +115,12 @@ export function rankTeamsForWeek(
   pitcherStats: Map<number, PitcherSeasonStats>,
   recentStats: Map<number, RecentTeamStats>,
   usedTeamIds: Set<number>,
-  futureAvgExpWins?: Map<number, number>
+  futureAvgExpWins?: Map<number, number>,
+  weights: ScoringWeights = DEFAULT_SCORING_WEIGHTS
 ): TeamWeekAnalysis[] {
+  const w = weights;
+
   // Phase 1: Compute home team win probability for each game once.
-  // Away team gets 1 - P, guaranteeing total expected wins = total games.
   const gameProbs = new Map<
     number,
     { homeWinProb: number; homePitcherAdj: number; awayPitcherAdj: number }
@@ -149,22 +140,23 @@ export function rankTeamsForWeek(
     const awayPythagRaw = awayStanding
       ? pythagoreanWinPct(awayStanding.runsScored, awayStanding.runsAllowed)
       : 0.5;
-    // Regress toward .500 based on sample size
-    const homePythag = regressToMean(homePythagRaw, homeGamesPlayed);
-    const awayPythag = regressToMean(awayPythagRaw, awayGamesPlayed);
+    const homePythag = regressToMean(homePythagRaw, homeGamesPlayed, w.regressionGames);
+    const awayPythag = regressToMean(awayPythagRaw, awayGamesPlayed, w.regressionGames);
 
     const homeRecent = recentStats.get(homeId);
     const awayRecent = recentStats.get(awayId);
     const homeRecentPythag = homeRecent && homeRecent.gamesPlayed >= 3
       ? regressToMean(
           pythagoreanWinPct(homeRecent.runsScored, homeRecent.runsAllowed),
-          homeRecent.gamesPlayed
+          homeRecent.gamesPlayed,
+          w.regressionGames
         )
       : null;
     const awayRecentPythag = awayRecent && awayRecent.gamesPlayed >= 3
       ? regressToMean(
           pythagoreanWinPct(awayRecent.runsScored, awayRecent.runsAllowed),
-          awayRecent.gamesPlayed
+          awayRecent.gamesPlayed,
+          w.regressionGames
         )
       : null;
 
@@ -177,25 +169,21 @@ export function rankTeamsForWeek(
       ? pitcherStats.get(awayPitcher.id)?.fip ?? null
       : null;
 
-    // Compute home team win probability using all factors
     const homeWinProb = calculateGameWinProbability(
-      homePythag,
-      awayPythag,
-      true,
-      homePitcherFIP,
-      awayPitcherFIP,
-      homeRecentPythag,
-      awayRecentPythag
+      homePythag, awayPythag, true,
+      homePitcherFIP, awayPitcherFIP,
+      homeRecentPythag, awayRecentPythag,
+      w
     );
 
     gameProbs.set(game.gamePk, {
       homeWinProb,
-      homePitcherAdj: pitcherAdjustment(homePitcherFIP, awayPitcherFIP),
-      awayPitcherAdj: pitcherAdjustment(awayPitcherFIP, homePitcherFIP),
+      homePitcherAdj: pitcherAdjustment(homePitcherFIP, awayPitcherFIP, w.pitcherAdjustmentMax),
+      awayPitcherAdj: pitcherAdjustment(awayPitcherFIP, homePitcherFIP, w.pitcherAdjustmentMax),
     });
   }
 
-  // Phase 2: Group games by team using precomputed probabilities
+  // Phase 2: Group games by team
   const teamGames = new Map<
     number,
     { team: { id: number; name: string; abbreviation: string }; games: { game: ScheduleGame; isHome: boolean }[] }
@@ -230,7 +218,8 @@ export function rankTeamsForWeek(
     const teamPythag = teamStanding
       ? regressToMean(
           pythagoreanWinPct(teamStanding.runsScored, teamStanding.runsAllowed),
-          teamGamesPlayed
+          teamGamesPlayed,
+          w.regressionGames
         )
       : 0.5;
 
@@ -238,7 +227,8 @@ export function rankTeamsForWeek(
     const teamRecentPythag = teamRecent && teamRecent.gamesPlayed >= 3
       ? regressToMean(
           pythagoreanWinPct(teamRecent.runsScored, teamRecent.runsAllowed),
-          teamRecent.gamesPlayed
+          teamRecent.gamesPlayed,
+          w.regressionGames
         )
       : null;
 
@@ -258,14 +248,14 @@ export function rankTeamsForWeek(
       const oppPythag = oppStanding
         ? regressToMean(
             pythagoreanWinPct(oppStanding.runsScored, oppStanding.runsAllowed),
-            oppGamesPlayed
+            oppGamesPlayed,
+            w.regressionGames
           )
         : 0.5;
 
       totalOppStrength += oppPythag;
 
       const probs = gameProbs.get(game.gamePk)!;
-      // Home team uses homeWinProb, away team uses 1 - homeWinProb
       const winProb = isHome ? probs.homeWinProb : 1 - probs.homeWinProb;
       const pAdj = isHome ? probs.homePitcherAdj : probs.awayPitcherAdj;
 
@@ -301,7 +291,7 @@ export function rankTeamsForWeek(
       awayGames,
       pythagoreanWinPct: teamPythag,
       recentFormWinPct: teamRecentPythag,
-      blendedWinPct: blendWithRecentForm(teamPythag, teamRecentPythag),
+      blendedWinPct: blendWithRecentForm(teamPythag, teamRecentPythag, w.recentFormWeight),
       avgOpponentStrength:
         gamesCount > 0 ? totalOppStrength / gamesCount : 0.5,
       expectedWins: totalExpWins,
@@ -316,10 +306,8 @@ export function rankTeamsForWeek(
     });
   }
 
-  // Sort: available teams by spike value (if available), else expected wins
   analyses.sort((a, b) => {
     if (a.isUsed !== b.isUsed) return a.isUsed ? 1 : -1;
-    // If we have spike data, sort by spike value
     if (a.spikeValue !== null && b.spikeValue !== null) {
       return b.spikeValue - a.spikeValue;
     }
@@ -329,17 +317,12 @@ export function rankTeamsForWeek(
   return analyses;
 }
 
-/**
- * Compute average expected wins per team across multiple future weeks.
- * Uses base model only (no pitcher data — too far out to know starters).
- * Returns Map<teamId, avgExpectedWins>.
- */
 export function computeFutureAvgExpWins(
   futureWeekSchedules: ScheduleGame[][],
   standings: Map<number, StandingsTeamRecord>,
-  recentStats: Map<number, RecentTeamStats>
+  recentStats: Map<number, RecentTeamStats>,
+  weights: ScoringWeights = DEFAULT_SCORING_WEIGHTS
 ): Map<number, number> {
-  // Accumulate expected wins per team across all future weeks
   const teamTotals = new Map<number, { total: number; weeks: number }>();
 
   const emptyPitchers = new Map<number, PitcherSeasonStats>();
@@ -353,7 +336,9 @@ export function computeFutureAvgExpWins(
       standings,
       emptyPitchers,
       recentStats,
-      emptyUsed
+      emptyUsed,
+      undefined,
+      weights
     );
 
     for (const team of weekRankings) {

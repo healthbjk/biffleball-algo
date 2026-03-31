@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import WeekSelector from "@/components/WeekSelector";
 import TeamTable from "@/components/TeamTable";
+import WeightsPanel from "@/components/WeightsPanel";
 import { useUsedTeams } from "@/hooks/useUsedTeams";
+import { useWeights } from "@/hooks/useWeights";
 import { SEASON_WEEKS, getCurrentWeekIndex } from "@/lib/constants";
 import {
   ScheduleGame,
@@ -17,14 +19,63 @@ import { rankTeamsForWeek, computeFutureAvgExpWins } from "@/lib/scoring";
 export default function Home() {
   const [weekIndex, setWeekIndex] = useState(getCurrentWeekIndex);
   const { usedTeamIds, toggleTeam, clearAll, loaded } = useUsedTeams();
-  const [rankings, setRankings] = useState<TeamWeekAnalysis[]>([]);
+  const { weights, updateWeight, resetToDefaults } = useWeights();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pitcherDataLoaded, setPitcherDataLoaded] = useState(false);
   const [recentDataLoaded, setRecentDataLoaded] = useState(false);
   const [futureDataLoaded, setFutureDataLoaded] = useState(false);
 
+  // Raw data state — fetched once per week change
+  const [schedule, setSchedule] = useState<ScheduleGame[]>([]);
+  const [standings, setStandings] = useState<Map<number, StandingsTeamRecord>>(
+    new Map()
+  );
+  const [pitcherStatsMap, setPitcherStatsMap] = useState<
+    Map<number, PitcherSeasonStats>
+  >(new Map());
+  const [recentStatsMap, setRecentStatsMap] = useState<
+    Map<number, RecentTeamStats>
+  >(new Map());
+  const [futureWeekSchedules, setFutureWeekSchedules] = useState<
+    ScheduleGame[][] | null
+  >(null);
+
   const week = SEASON_WEEKS[weekIndex];
+
+  // Recompute rankings reactively when data or weights change
+  const rankings = useMemo<TeamWeekAnalysis[]>(() => {
+    if (schedule.length === 0 && loading) return [];
+
+    let futureAvg: Map<number, number> | undefined;
+    if (futureWeekSchedules && futureWeekSchedules.length > 0) {
+      futureAvg = computeFutureAvgExpWins(
+        futureWeekSchedules,
+        standings,
+        recentStatsMap,
+        weights
+      );
+    }
+
+    return rankTeamsForWeek(
+      schedule,
+      standings,
+      pitcherStatsMap,
+      recentStatsMap,
+      usedTeamIds,
+      futureAvg,
+      weights
+    );
+  }, [
+    schedule,
+    standings,
+    pitcherStatsMap,
+    recentStatsMap,
+    usedTeamIds,
+    futureWeekSchedules,
+    weights,
+    loading,
+  ]);
 
   const fetchData = useCallback(async () => {
     if (!week) return;
@@ -33,44 +84,39 @@ export default function Home() {
     setPitcherDataLoaded(false);
     setRecentDataLoaded(false);
     setFutureDataLoaded(false);
+    setFutureWeekSchedules(null);
 
     try {
       // Phase 1: Fetch schedule + standings in parallel
       const [scheduleRes, standingsRes] = await Promise.all([
-        fetch(`/api/mlb/schedule?startDate=${week.startDate}&endDate=${week.endDate}`),
+        fetch(
+          `/api/mlb/schedule?startDate=${week.startDate}&endDate=${week.endDate}`
+        ),
         fetch("/api/mlb/standings"),
       ]);
 
       if (!scheduleRes.ok) throw new Error("Failed to fetch schedule");
       if (!standingsRes.ok) throw new Error("Failed to fetch standings");
 
-      const schedule: ScheduleGame[] = await scheduleRes.json();
+      const scheduleData: ScheduleGame[] = await scheduleRes.json();
       const standingsObj = await standingsRes.json();
 
-      // Reconstruct Map from JSON object
-      const standings = new Map<number, StandingsTeamRecord>();
+      const standingsData = new Map<number, StandingsTeamRecord>();
       for (const [key, value] of Object.entries(standingsObj)) {
         if (key !== "error") {
-          standings.set(parseInt(key, 10), value as StandingsTeamRecord);
+          standingsData.set(parseInt(key, 10), value as StandingsTeamRecord);
         }
       }
 
-      // Initial render with base data (no pitcher/recent stats yet)
-      const emptyPitchers = new Map<number, PitcherSeasonStats>();
-      const emptyRecent = new Map<number, RecentTeamStats>();
-      const initialRankings = rankTeamsForWeek(
-        schedule,
-        standings,
-        emptyPitchers,
-        emptyRecent,
-        usedTeamIds
-      );
-      setRankings(initialRankings);
+      setSchedule(scheduleData);
+      setStandings(standingsData);
+      setPitcherStatsMap(new Map());
+      setRecentStatsMap(new Map());
       setLoading(false);
 
       // Phase 2: Enrich with pitcher stats and recent form in parallel
       const pitcherIds = new Set<number>();
-      for (const game of schedule) {
+      for (const game of scheduleData) {
         if (game.teams.home.probablePitcher) {
           pitcherIds.add(game.teams.home.probablePitcher.id);
         }
@@ -80,12 +126,12 @@ export default function Home() {
       }
 
       const teamIds = new Set<number>();
-      for (const game of schedule) {
+      for (const game of scheduleData) {
         teamIds.add(game.teams.home.team.id);
         teamIds.add(game.teams.away.team.id);
       }
 
-      const [pitcherStatsMap, recentStatsMap] = await Promise.all([
+      const [pitcherData, recentData] = await Promise.all([
         pitcherIds.size > 0
           ? fetchPitcherStatsFromAPI([...pitcherIds])
           : Promise.resolve(new Map<number, PitcherSeasonStats>()),
@@ -94,18 +140,10 @@ export default function Home() {
           : Promise.resolve(new Map<number, RecentTeamStats>()),
       ]);
 
-      setPitcherDataLoaded(pitcherStatsMap.size > 0 || pitcherIds.size === 0);
-      setRecentDataLoaded(recentStatsMap.size > 0 || teamIds.size === 0);
-
-      // Re-rank with enriched data (no future data yet)
-      const enrichedRankings = rankTeamsForWeek(
-        schedule,
-        standings,
-        pitcherStatsMap,
-        recentStatsMap,
-        usedTeamIds
-      );
-      setRankings(enrichedRankings);
+      setPitcherDataLoaded(pitcherData.size > 0 || pitcherIds.size === 0);
+      setRecentDataLoaded(recentData.size > 0 || teamIds.size === 0);
+      setPitcherStatsMap(pitcherData);
+      setRecentStatsMap(recentData);
 
       // Phase 3: Fetch future schedule for survivor game theory
       try {
@@ -113,25 +151,10 @@ export default function Home() {
           `/api/mlb/future-schedule?after=${week.endDate}`
         );
         if (futureRes.ok) {
-          const futureWeekSchedules: ScheduleGame[][] = await futureRes.json();
-          if (futureWeekSchedules.length > 0) {
-            const futureAvg = computeFutureAvgExpWins(
-              futureWeekSchedules,
-              standings,
-              recentStatsMap
-            );
+          const futureData: ScheduleGame[][] = await futureRes.json();
+          if (futureData.length > 0) {
+            setFutureWeekSchedules(futureData);
             setFutureDataLoaded(true);
-
-            // Final re-rank with spike values
-            const finalRankings = rankTeamsForWeek(
-              schedule,
-              standings,
-              pitcherStatsMap,
-              recentStatsMap,
-              usedTeamIds,
-              futureAvg
-            );
-            setRankings(finalRankings);
           }
         }
       } catch {
@@ -141,7 +164,7 @@ export default function Home() {
       setError(err instanceof Error ? err.message : "An error occurred");
       setLoading(false);
     }
-  }, [week, usedTeamIds]);
+  }, [week]);
 
   useEffect(() => {
     if (loaded) {
@@ -175,6 +198,14 @@ export default function Home() {
         </div>
       </div>
 
+      <div className="mb-4">
+        <WeightsPanel
+          weights={weights}
+          onUpdateWeight={updateWeight}
+          onReset={resetToDefaults}
+        />
+      </div>
+
       {error && (
         <div className="mb-4 rounded-lg border border-red-800 bg-red-900/30 px-4 py-3 text-sm text-red-300">
           {error}
@@ -187,17 +218,13 @@ export default function Home() {
         </div>
       )}
 
-      <TeamTable
-        data={rankings}
-        onToggleUsed={toggleTeam}
-        loading={loading}
-      />
+      <TeamTable data={rankings} onToggleUsed={toggleTeam} loading={loading} />
 
       <footer className="mt-6 text-xs text-gray-600">
         <p>
-          Expected wins use Pythagorean win%, log5 matchup probability,
-          home field advantage, probable pitcher quality, and recent 14-day
-          form. Data from MLB Stats API.
+          Expected wins use Pythagorean win%, log5 matchup probability, home
+          field advantage, probable pitcher quality, and recent 14-day form.
+          Data from MLB Stats API.
         </p>
       </footer>
     </main>
