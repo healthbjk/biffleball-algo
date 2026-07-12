@@ -21,7 +21,12 @@ export const DEFAULT_SCORING_WEIGHTS: ScoringWeights = {
   recentFormWeight: 0.15,
   pitcherAdjustmentMax: 0.04,
   regressionGames: 100,
+  marketWeight: 0.7,
 };
+
+// The Odds API (the-odds-api.com). Optional: betting-market blending is only
+// active when ODDS_API_KEY is set in the environment AND the user enables it.
+export const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 
 // 2026 MLB season weeks (Monday-Sunday blocks)
 // Opening Day is March 26, 2026. Season ends September 27, 2026.

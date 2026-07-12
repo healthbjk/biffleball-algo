@@ -55,6 +55,14 @@ const SLIDERS: SliderConfig[] = [
     step: 5,
     format: (v) => `${v}`,
   },
+  {
+    key: "marketWeight",
+    label: "Market Weight (when odds on)",
+    min: 0,
+    max: 1,
+    step: 0.05,
+    format: (v) => `${(v * 100).toFixed(0)}%`,
+  },
 ];
 
 export default function WeightsPanel({
