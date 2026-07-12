@@ -128,6 +128,17 @@ export interface ScoringWeights {
   recentFormWeight: number;
   pitcherAdjustmentMax: number;
   regressionGames: number;
+  // How much to trust the betting market over the model for games that have
+  // odds (0 = ignore odds, 1 = use the market's win probability outright).
+  // Only applied when market odds are enabled AND available for a game.
+  marketWeight: number;
+}
+
+// De-vigged moneyline win probabilities for a single game, keyed by gamePk.
+export interface GameOdds {
+  gamePk: number;
+  homeWinProb: number;
+  awayWinProb: number;
 }
 
 export interface SeasonWeek {

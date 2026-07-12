@@ -1,11 +1,13 @@
-import { MLB_API_BASE } from "./constants";
+import { MLB_API_BASE, ODDS_API_BASE } from "./constants";
 import {
   MLBTeam,
   ScheduleGame,
   StandingsTeamRecord,
   PitcherSeasonStats,
   RecentTeamStats,
+  GameOdds,
 } from "./types";
+import { devig, teamsMatch } from "./odds";
 
 export async function fetchTeams(): Promise<MLBTeam[]> {
   const res = await fetch(`${MLB_API_BASE}/teams?sportId=1`);
@@ -240,6 +242,80 @@ export async function fetchRecentTeamStats(
     if (result.status === "fulfilled" && result.value) {
       map.set(result.value.teamId, result.value);
     }
+  }
+
+  return map;
+}
+
+interface OddsApiEvent {
+  commence_time: string;
+  home_team: string;
+  away_team: string;
+  bookmakers: {
+    markets: { key: string; outcomes: { name: string; price: number }[] }[];
+  }[];
+}
+
+// Fetch de-vigged moneyline win probabilities for the given date range and map
+// them onto MLB gamePks. Requires ODDS_API_KEY. Returns an empty map if the
+// market has no lines for those games yet (books post MLB lines ~1 day out, so
+// mid/late-week games are often unpriced). Never throws for missing data.
+export async function fetchGameOdds(
+  startDate: string,
+  endDate: string
+): Promise<Map<number, GameOdds>> {
+  const map = new Map<number, GameOdds>();
+  const apiKey = process.env.ODDS_API_KEY;
+  if (!apiKey) return map;
+
+  // The games we want to attach odds to (gives us gamePks + official dates).
+  const games = await fetchSchedule(startDate, endDate);
+  if (games.length === 0) return map;
+
+  const from = `${startDate}T00:00:00Z`;
+  const to = `${endDate}T23:59:59Z`;
+  const res = await fetch(
+    `${ODDS_API_BASE}/sports/baseball_mlb/odds/?apiKey=${apiKey}` +
+      `&regions=us&markets=h2h&oddsFormat=american` +
+      `&commenceTimeFrom=${from}&commenceTimeTo=${to}`
+  );
+  if (!res.ok) return map;
+  const events: OddsApiEvent[] = await res.json();
+
+  for (const event of events) {
+    // Consensus home-win probability = average of each book's de-vigged line.
+    const homeProbs: number[] = [];
+    for (const book of event.bookmakers || []) {
+      const h2h = book.markets?.find((m) => m.key === "h2h");
+      if (!h2h) continue;
+      const home = h2h.outcomes.find((o) => teamsMatch(o.name, event.home_team));
+      const away = h2h.outcomes.find((o) => teamsMatch(o.name, event.away_team));
+      if (!home || !away) continue;
+      homeProbs.push(devig(home.price, away.price));
+    }
+    if (homeProbs.length === 0) continue;
+    const homeWinProb = homeProbs.reduce((a, b) => a + b, 0) / homeProbs.length;
+
+    // Match this event to an MLB game by team pair + date. A game's officialDate
+    // is the UTC commence date or the day before (late night games roll over).
+    const utcDate = event.commence_time.split("T")[0];
+    const prev = new Date(utcDate + "T00:00:00Z");
+    prev.setUTCDate(prev.getUTCDate() - 1);
+    const candidateDates = new Set([utcDate, prev.toISOString().split("T")[0]]);
+
+    const game = games.find(
+      (g) =>
+        candidateDates.has(g.officialDate) &&
+        teamsMatch(event.home_team, g.teams.home.team.name) &&
+        teamsMatch(event.away_team, g.teams.away.team.name)
+    );
+    if (!game) continue;
+
+    map.set(game.gamePk, {
+      gamePk: game.gamePk,
+      homeWinProb,
+      awayWinProb: 1 - homeWinProb,
+    });
   }
 
   return map;

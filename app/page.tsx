@@ -6,6 +6,7 @@ import TeamTable from "@/components/TeamTable";
 import WeightsPanel from "@/components/WeightsPanel";
 import { useUsedTeams } from "@/hooks/useUsedTeams";
 import { useWeights } from "@/hooks/useWeights";
+import { useMarketOdds } from "@/hooks/useMarketOdds";
 import { SEASON_WEEKS, getCurrentWeekIndex } from "@/lib/constants";
 import {
   ScheduleGame,
@@ -13,6 +14,7 @@ import {
   PitcherSeasonStats,
   RecentTeamStats,
   TeamWeekAnalysis,
+  GameOdds,
 } from "@/lib/types";
 import { rankTeamsForWeek, computeFutureAvgExpWins } from "@/lib/scoring";
 
@@ -20,11 +22,19 @@ export default function Home() {
   const [weekIndex, setWeekIndex] = useState(getCurrentWeekIndex);
   const { usedTeamIds, toggleTeam, clearAll, loaded } = useUsedTeams();
   const { weights, updateWeight, resetToDefaults } = useWeights();
+  const {
+    enabled: marketEnabled,
+    toggle: toggleMarket,
+    loaded: marketLoaded,
+  } = useMarketOdds();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pitcherDataLoaded, setPitcherDataLoaded] = useState(false);
   const [recentDataLoaded, setRecentDataLoaded] = useState(false);
   const [futureDataLoaded, setFutureDataLoaded] = useState(false);
+  const [marketDataLoaded, setMarketDataLoaded] = useState(false);
+  const [marketMissingKey, setMarketMissingKey] = useState(false);
+  const [oddsMap, setOddsMap] = useState<Map<number, GameOdds>>(new Map());
 
   // Raw data state — fetched once per week change
   const [schedule, setSchedule] = useState<ScheduleGame[]>([]);
@@ -64,7 +74,8 @@ export default function Home() {
       recentStatsMap,
       usedTeamIds,
       futureAvg,
-      weights
+      weights,
+      marketEnabled ? oddsMap : undefined
     );
   }, [
     schedule,
@@ -74,6 +85,8 @@ export default function Home() {
     usedTeamIds,
     futureWeekSchedules,
     weights,
+    marketEnabled,
+    oddsMap,
     loading,
   ]);
 
@@ -172,6 +185,54 @@ export default function Home() {
     }
   }, [fetchData, loaded]);
 
+  // Betting-market odds: fetched only when the user has the toggle on. Degrades
+  // to the pure model when off, when no API key is configured, or when books
+  // haven't posted lines for the week's games yet.
+  useEffect(() => {
+    if (!marketLoaded || !week) return;
+    if (!marketEnabled) {
+      setOddsMap(new Map());
+      setMarketDataLoaded(false);
+      setMarketMissingKey(false);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      setMarketDataLoaded(false);
+      try {
+        const res = await fetch(
+          `/api/odds?startDate=${week.startDate}&endDate=${week.endDate}`
+        );
+        if (!res.ok) throw new Error("odds fetch failed");
+        const obj = await res.json();
+        if (cancelled) return;
+        if (obj.disabled) {
+          setMarketMissingKey(true);
+          setOddsMap(new Map());
+          setMarketDataLoaded(false);
+          return;
+        }
+        setMarketMissingKey(false);
+        const map = new Map<number, GameOdds>();
+        for (const [key, value] of Object.entries(obj)) {
+          if (key !== "error") map.set(parseInt(key, 10), value as GameOdds);
+        }
+        setOddsMap(map);
+        setMarketDataLoaded(map.size > 0);
+      } catch {
+        if (!cancelled) {
+          setOddsMap(new Map());
+          setMarketDataLoaded(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [week, marketEnabled, marketLoaded]);
+
   return (
     <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       <header className="mb-6">
@@ -189,6 +250,18 @@ export default function Home() {
           <DataBadge label="FIP" loaded={pitcherDataLoaded} />
           <DataBadge label="Recent Form" loaded={recentDataLoaded} />
           <DataBadge label="Survivor" loaded={futureDataLoaded} />
+          {marketEnabled && <DataBadge label="Market" loaded={marketDataLoaded} />}
+          <button
+            onClick={toggleMarket}
+            className={`rounded-md border px-3 py-1.5 text-xs ${
+              marketEnabled
+                ? "border-blue-600 bg-blue-900/30 text-blue-300 hover:border-blue-500"
+                : "border-gray-600 text-gray-400 hover:border-gray-500 hover:text-gray-300"
+            }`}
+            title="Blend de-vigged betting-market win probabilities into the model where lines exist"
+          >
+            Betting Odds: {marketEnabled ? "On" : "Off"}
+          </button>
           <button
             onClick={clearAll}
             className="rounded-md border border-gray-600 px-3 py-1.5 text-xs text-gray-400 hover:border-gray-500 hover:text-gray-300"
@@ -205,6 +278,23 @@ export default function Home() {
           onReset={resetToDefaults}
         />
       </div>
+
+      {marketEnabled && marketMissingKey && (
+        <div className="mb-4 rounded-lg border border-amber-800 bg-amber-900/20 px-4 py-3 text-sm text-amber-300">
+          Betting Odds is on, but no <code className="font-mono">ODDS_API_KEY</code>{" "}
+          is configured on the server, so the model is running unchanged. Add a
+          key from the-odds-api.com to enable market blending.
+        </div>
+      )}
+
+      {marketEnabled && !marketMissingKey && marketDataLoaded && (
+        <div className="mb-4 rounded-lg border border-blue-900 bg-blue-900/20 px-4 py-3 text-sm text-blue-300">
+          Market blending active for {oddsMap.size} game
+          {oddsMap.size === 1 ? "" : "s"} with posted lines. Books price MLB
+          games ~1 day out, so later-week games still use the model until their
+          lines open.
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 rounded-lg border border-red-800 bg-red-900/30 px-4 py-3 text-sm text-red-300">
@@ -224,7 +314,8 @@ export default function Home() {
         <p>
           Expected wins use Pythagorean win%, log5 matchup probability, home
           field advantage, probable pitcher quality, and recent 14-day form.
-          Data from MLB Stats API.
+          Data from MLB Stats API. With Betting Odds on, de-vigged moneylines
+          (the-odds-api.com) are blended in for games that have posted lines.
         </p>
       </footer>
     </main>

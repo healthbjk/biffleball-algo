@@ -6,6 +6,7 @@ import {
   TeamWeekAnalysis,
   GameAnalysis,
   ScoringWeights,
+  GameOdds,
 } from "./types";
 import {
   PYTHAGOREAN_EXPONENT,
@@ -97,7 +98,8 @@ export function calculateGameWinProbability(
   opponentPitcherFIP: number | null,
   teamRecentPythag: number | null,
   opponentRecentPythag: number | null,
-  w: ScoringWeights
+  w: ScoringWeights,
+  marketWinProb: number | null = null
 ): number {
   const teamBlended = blendWithRecentForm(teamPythag, teamRecentPythag, w.recentFormWeight);
   const oppBlended = blendWithRecentForm(opponentPythag, opponentRecentPythag, w.recentFormWeight);
@@ -105,6 +107,11 @@ export function calculateGameWinProbability(
   let prob = log5WinProbability(teamBlended, oppBlended);
   prob = adjustForHomeField(prob, isHome, w.homeFieldAdvantage);
   prob += pitcherAdjustment(teamPitcherFIP, opponentPitcherFIP, w.pitcherAdjustmentMax);
+
+  // Blend toward the betting market where a line exists for this game.
+  if (marketWinProb !== null) {
+    prob = w.marketWeight * marketWinProb + (1 - w.marketWeight) * prob;
+  }
 
   return Math.max(0.01, Math.min(0.99, prob));
 }
@@ -116,7 +123,8 @@ export function rankTeamsForWeek(
   recentStats: Map<number, RecentTeamStats>,
   usedTeamIds: Set<number>,
   futureAvgExpWins?: Map<number, number>,
-  weights: ScoringWeights = DEFAULT_SCORING_WEIGHTS
+  weights: ScoringWeights = DEFAULT_SCORING_WEIGHTS,
+  gameOdds?: Map<number, GameOdds>
 ): TeamWeekAnalysis[] {
   const w = weights;
 
@@ -169,11 +177,13 @@ export function rankTeamsForWeek(
       ? pitcherStats.get(awayPitcher.id)?.fip ?? null
       : null;
 
+    const marketHomeWinProb = gameOdds?.get(game.gamePk)?.homeWinProb ?? null;
+
     const homeWinProb = calculateGameWinProbability(
       homePythag, awayPythag, true,
       homePitcherFIP, awayPitcherFIP,
       homeRecentPythag, awayRecentPythag,
-      w
+      w, marketHomeWinProb
     );
 
     gameProbs.set(game.gamePk, {

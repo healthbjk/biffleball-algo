@@ -51,9 +51,17 @@ const SLIDERS: SliderConfig[] = [
     key: "regressionGames",
     label: "Regression Games",
     min: 0,
-    max: 80,
+    max: 150,
     step: 5,
     format: (v) => `${v}`,
+  },
+  {
+    key: "marketWeight",
+    label: "Market Weight (when odds on)",
+    min: 0,
+    max: 1,
+    step: 0.05,
+    format: (v) => `${(v * 100).toFixed(0)}%`,
   },
 ];
 
