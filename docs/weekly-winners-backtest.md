@@ -86,6 +86,25 @@ the data *does* support is a disciplined pick rule:
    `expectedWins` gives the best single pick because it rewards the 7-game
    volume. Use rate to shortlist, total to choose.
 
+## Tuned default weights
+
+Grid-searching the four `ScoringWeights` sliders (216 combos) against this same
+backtest, all three tunable-and-testable weights point the same way — **trust
+the standings less, trust the schedule shape more** — consistent with season
+win% being ~useless week to week. The defaults in `lib/constants.ts` were
+updated accordingly:
+
+| Weight | Old | New | Why |
+|---|---|---|---|
+| `regressionGames` | 25 | **100** | Pull records harder toward .500 |
+| `recentFormWeight` | 0.30 | **0.15** | Recent form is weak; cranking it hurt |
+| `homeFieldAdvantage` | 0.04 | **0.08** | Home-heavy weeks win (winners 73% home-majority) |
+| `pitcherAdjustmentMax` | 0.06 | **0.04** | Per-game signal; averages out over a week; untestable point-in-time |
+
+This lifted the top pick's average actual wins from **3.93 → ~4.07** over 15
+weeks. Note the spread across *all* combos is under one win, so settings are a
+minor lever — the 6+ games gate matters far more.
+
 ## Caveats
 
 - The backtest excludes the probable-pitcher FIP adjustment (max ±0.06), since

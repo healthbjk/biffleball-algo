@@ -51,7 +51,7 @@ const SLIDERS: SliderConfig[] = [
     key: "regressionGames",
     label: "Regression Games",
     min: 0,
-    max: 80,
+    max: 150,
     step: 5,
     format: (v) => `${v}`,
   },

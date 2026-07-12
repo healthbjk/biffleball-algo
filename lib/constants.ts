@@ -6,12 +6,21 @@ export const MLB_API_BASE = "https://statsapi.mlb.com/api/v1";
 export const PYTHAGOREAN_EXPONENT = 2;
 export const LEAGUE_AVG_ERA = 4.0;
 
-// User-tunable defaults
+// User-tunable defaults.
+// Tuned against the first-half weekly-winner backtest (see
+// docs/weekly-winners-backtest.md and scripts/backtest-weekly-winners.mjs).
+// Winners are driven by schedule shape (volume, home games, matchup), not by
+// which team has the better record — season win% correlates ~0 with weekly
+// wins. So the weights de-weight raw record: heavier regression toward .500,
+// lighter recent-form, stronger home-field. This lifted the top pick's average
+// actual wins from 3.93 to ~4.07 over 15 weeks. pitcherAdjustmentMax is kept
+// modest — it's a per-game signal that largely averages out over a full week
+// and could not be evaluated point-in-time.
 export const DEFAULT_SCORING_WEIGHTS: ScoringWeights = {
-  homeFieldAdvantage: 0.04,
-  recentFormWeight: 0.3,
-  pitcherAdjustmentMax: 0.06,
-  regressionGames: 25,
+  homeFieldAdvantage: 0.08,
+  recentFormWeight: 0.15,
+  pitcherAdjustmentMax: 0.04,
+  regressionGames: 100,
 };
 
 // 2026 MLB season weeks (Monday-Sunday blocks)
